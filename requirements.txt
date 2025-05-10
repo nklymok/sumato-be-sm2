@@ -1,1 +1,6 @@
-supermemo2==2.0.0
+supermemo2~=3.0.1
+pg8000~=1.31.2
+flasgger~=0.9.7.1
+fastapi
+uvicorn
+pydantic

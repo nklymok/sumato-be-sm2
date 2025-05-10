@@ -1,38 +1,72 @@
-from datetime import timedelta, datetime
+from datetime import datetime, timezone
+from typing import Optional
 
-from flask import Flask, request, jsonify
-from supermemo2 import SMTwo
+from fastapi import FastAPI
+from pydantic import BaseModel, Field, model_validator, ConfigDict
+from supermemo2 import first_review, review
 
-app = Flask(__name__)
-
-@app.route('/')
-def hello():
-    # parse body. The json has such fields: easiness, interval, repetitions, answer
-    return 'Hello, World!'
+app = FastAPI(openapi_prefix="/sm2", docs_url="/docs")
 
 
-@app.route('/sm2', methods=['POST'])
-def process_sm2():
-    if request.method == 'POST':
-        data = request.json
-        result = None
-        if data.get('easiness') is not None and data.get('interval') is not None and data.get('repetitions') is not None:
-            # Assuming JSON contains fields: easiness, interval, repetitions, answer
-            easiness = float(data.get('easiness'))
-            interval = int(data.get('interval'))
-            repetitions = int(data.get('repetitions'))
-            answer = 3 if bool(data.get('correct')) is True else 0
-            result = SMTwo(easiness, interval, repetitions).review(answer)
-        else:
-            answer = 3 if bool(data.get('correct')) is True else 0
-            result = SMTwo.first_review(answer)
-        current_time = datetime.now()
-        next_review_date_time = datetime(current_time.year, current_time.month, current_time.day, current_time.hour, current_time.minute, current_time.second, current_time.microsecond)
-        result.review_date = next_review_date_time
-        return jsonify(result.__dict__)
+class SM2Request(BaseModel):
+    correct: bool
+    easiness: Optional[float] = None
+    interval: Optional[int] = None
+    repetitions: Optional[int] = None
+
+    @model_validator(mode="before")
+    def validate_review_fields(cls, values: dict) -> dict:
+        eas, iv, rep = (
+            values.get("easiness"),
+            values.get("interval"),
+            values.get("repetitions"),
+        )
+        all_none = eas is None and iv is None and rep is None
+        all_present = eas is not None and iv is not None and rep is not None
+
+        if not (all_none or all_present):
+            raise ValueError(
+                "`easiness`, `interval` and `repetitions` must be provided together or omitted together"
+            )
+        return values
+
+
+class SM2Response(BaseModel):
+    ease_factor: float
+    interval: int
+    repetitions: int
+    review_datetime: datetime = Field(
+        ..., description="UTC timestamp in ISO-8601, e.g. '2025-05-11T12:38:19Z'"
+    )
+    model_config = ConfigDict(
+        json_encoders={
+            datetime: lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        }
+    )
+
+
+@app.post("/", response_model=SM2Response)
+def process_sm2(payload: SM2Request):
+    # Determine whether to run first_review or review()
+    if payload.easiness is not None:
+        result = review(
+            3 if payload.correct else 0,
+            payload.easiness,
+            payload.interval,
+            payload.repetitions
+        )
     else:
-        return jsonify({'status': 'error', 'message': 'Only POST requests are allowed'}), 405
+        result = first_review(3 if payload.correct else 0)
+
+    return SM2Response(
+        ease_factor=result['easiness'],
+        interval=result['interval'],
+        repetitions=result['repetitions'],
+        review_datetime=result['review_datetime']
+    )
 
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8081)
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, port=8081)
